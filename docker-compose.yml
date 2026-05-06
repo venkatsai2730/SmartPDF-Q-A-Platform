@@ -1,0 +1,33 @@
+services:
+  # ─── Backend: FastAPI + LangChain RAG Pipeline ─────────────────
+  backend:
+    build:
+      context: ./backend
+    container_name: smartpdf-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - JWT_SECRET_KEY=smartpdf-production-secret-change-me
+    volumes:
+      - model_cache:/root/.cache    # Persist downloaded HuggingFace models
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s   # Models take time to download on first run
+
+  # ─── Frontend: React SPA served by Nginx ───────────────────────
+  frontend:
+    build:
+      context: ./frontend
+    container_name: smartpdf-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  model_cache:

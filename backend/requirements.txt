@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-huggingface>=0.0.3
+pymupdf
+faiss-cpu
+sentence-transformers>=2.7.0
+transformers>=4.40.0
+torch
+numpy
+python-jose[cryptography]
+passlib[bcrypt]

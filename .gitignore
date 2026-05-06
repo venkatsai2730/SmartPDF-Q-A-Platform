@@ -1,23 +1,44 @@
-# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+# Dependencies
+node_modules/
+frontend/node_modules/
 
-# dependencies
-/node_modules
-/.pnp
-.pnp.js
+# Build output
+frontend/build/
 
-# testing
-/coverage
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+backend/uploads/
 
-# production
-/build
-
-# misc
-.DS_Store
+# Environment
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
 
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Old files (replaced by backend/ and frontend/ folders)
+# These can be removed after confirming the restructure works:
+# server.py
+# requirements.txt
+# src/
+# public/
+# package.json
+# package-lock.json
+# backend.ipynb
