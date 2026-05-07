@@ -22,32 +22,17 @@ import time
 import logging
 import tempfile
 import os
+import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
+import bcrypt
 from fastapi import FastAPI, UploadFile, File, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from jose import JWTError, jwt
-from passlib.context import CryptContext
-
-# LangChain — Document loading & splitting
-from langchain_community.document_loaders import PyMuPDFLoader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-
-# LangChain — Embeddings (BGE via HuggingFace)
-from langchain_huggingface import HuggingFaceEmbeddings
-
-# LangChain — Vector store
-from langchain_community.vectorstores import FAISS
-
-# LangChain — Reranker (Cross-Encoder)
-from langchain.retrievers import ContextualCompressionRetriever
-from langchain.retrievers.document_compressors import CrossEncoderReranker
-from langchain_community.cross_encoders import HuggingFaceCrossEncoder
-
-# HuggingFace — QA reader
-from transformers import pipeline as hf_pipeline
 
 
 # ---------------------------------------------------------------------------
@@ -66,29 +51,54 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Dedicated thread pool for CPU-bound password hashing (avoids deadlock with model loading)
+_bcrypt_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="bcrypt")
+
 
 # ---------------------------------------------------------------------------
-# Authentication — JWT + Password Hashing
+# Authentication — JWT + Password Hashing (using bcrypt directly)
 # ---------------------------------------------------------------------------
 
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", "smartpdf-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 120
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+
+
+def hash_password_sync(plain_password: str) -> str:
+    """Hash a password using bcrypt (synchronous)."""
+    return bcrypt.hashpw(plain_password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def verify_password_sync(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password against its bcrypt hash (synchronous)."""
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
+
+async def hash_password_async(plain_password: str) -> str:
+    """Hash a password in a dedicated thread pool to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_bcrypt_executor, hash_password_sync, plain_password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """Verify a password in a dedicated thread pool to avoid blocking the event loop."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(_bcrypt_executor, verify_password_sync, plain_password, hashed_password)
+
 
 # Demo users (in production, use a database)
 USERS_DB = {
     "admin": {
         "username": "admin",
         "full_name": "Admin User",
-        "hashed_password": pwd_context.hash("admin123"),
+        "hashed_password": hash_password_sync("admin123"),
     },
     "demo": {
         "username": "demo",
         "full_name": "Demo User",
-        "hashed_password": pwd_context.hash("demo123"),
+        "hashed_password": hash_password_sync("demo123"),
     },
 }
 
@@ -103,10 +113,6 @@ class Token(BaseModel):
 class UserOut(BaseModel):
     username: str
     full_name: str
-
-
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
 
 
 def create_access_token(data: dict, expires_delta: timedelta = None):
@@ -133,39 +139,128 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 
 # ---------------------------------------------------------------------------
-# Model Initialization (loaded ONCE at module level — NOT inside endpoints)
+# Lazy Model Loading — models load in background, APIs work immediately
 # ---------------------------------------------------------------------------
 
-logger.info("Loading embedding model: BAAI/bge-large-en-v1.5 ...")
+class ModelManager:
+    """Manages lazy/background loading of ML models so the server starts instantly."""
 
-EMBED_MODEL_NAME = "BAAI/bge-large-en-v1.5"
-embeddings = HuggingFaceEmbeddings(
-    model_name=EMBED_MODEL_NAME,
-    model_kwargs={"device": "cpu"},
-    encode_kwargs={"normalize_embeddings": True},
-)
+    def __init__(self):
+        self.embeddings = None
+        self.cross_encoder = None
+        self.reranker = None
+        self.qa_reader = None
+        self.text_splitter = None
+        self._loading = False
+        self._loaded = False
+        self._error = None
+        self._lock = threading.Lock()
 
-logger.info("Loading cross-encoder reranker: BAAI/bge-reranker-base ...")
+    @property
+    def is_ready(self):
+        return self._loaded and self._error is None
 
-cross_encoder = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base")
-reranker = CrossEncoderReranker(model=cross_encoder, top_n=5)
+    @property
+    def status(self):
+        if self._loaded:
+            return "ready"
+        if self._error:
+            return f"error: {self._error}"
+        if self._loading:
+            return "loading"
+        return "not_started"
 
-logger.info("Loading QA reader: deepset/deberta-v3-large-squad2 ...")
+    def load_models(self):
+        """Load all ML models. Called in a background thread."""
+        with self._lock:
+            if self._loaded or self._loading:
+                return
+            self._loading = True
 
-qa_reader = hf_pipeline(
-    "question-answering",
-    model="deepset/deberta-v3-large-squad2",
-    tokenizer="deepset/deberta-v3-large-squad2",
-)
+        try:
+            # LangChain — Document loading & splitting
+            from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-logger.info("All models loaded successfully.")
+            # LangChain — Embeddings (BGE via HuggingFace)
+            from langchain_huggingface import HuggingFaceEmbeddings
+
+            # LangChain — Reranker (Cross-Encoder)
+            from langchain.retrievers.document_compressors import CrossEncoderReranker
+            from langchain_community.cross_encoders import HuggingFaceCrossEncoder
+
+            # HuggingFace — QA reader
+            from transformers import pipeline as hf_pipeline
+
+            logger.info("Loading embedding model: BAAI/bge-large-en-v1.5 ...")
+            EMBED_MODEL_NAME = "BAAI/bge-large-en-v1.5"
+            self.embeddings = HuggingFaceEmbeddings(
+                model_name=EMBED_MODEL_NAME,
+                model_kwargs={"device": "cpu"},
+                encode_kwargs={"normalize_embeddings": True},
+            )
+
+            logger.info("Loading cross-encoder reranker: BAAI/bge-reranker-base ...")
+            self.cross_encoder = HuggingFaceCrossEncoder(model_name="BAAI/bge-reranker-base")
+            self.reranker = CrossEncoderReranker(model=self.cross_encoder, top_n=5)
+
+            logger.info("Loading QA reader: deepset/deberta-v3-large-squad2 ...")
+            self.qa_reader = hf_pipeline(
+                "question-answering",
+                model="deepset/deberta-v3-large-squad2",
+                tokenizer="deepset/deberta-v3-large-squad2",
+            )
+
+            # RecursiveCharacterTextSplitter — sentence-boundary-aware chunking
+            # chunk_size=800, chunk_overlap=160 (20% overlap) — optimal for BGE-large-en-v1.5
+            self.text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=800,
+                chunk_overlap=160,
+                separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
+                length_function=len,
+            )
+
+            self._loaded = True
+            self._loading = False
+            logger.info("✅ All models loaded successfully.")
+
+        except Exception as e:
+            self._error = str(e)
+            self._loading = False
+            logger.error(f"❌ Model loading failed: {e}")
+
+    def require_models(self):
+        """Raise HTTPException if models aren't loaded yet."""
+        if self._error:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model loading failed: {self._error}. Please check server logs.",
+            )
+        if not self._loaded:
+            raise HTTPException(
+                status_code=503,
+                detail="Models are still loading. Please wait a few minutes and try again.",
+            )
+
+
+models = ModelManager()
+
+
+# ---------------------------------------------------------------------------
+# Startup Event — load models in background thread
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def startup_event():
+    logger.info("🚀 Server starting — models will load in background...")
+    thread = threading.Thread(target=models.load_models, daemon=True)
+    thread.start()
 
 
 # ---------------------------------------------------------------------------
 # In-Memory Stores
 # ---------------------------------------------------------------------------
 
-vector_stores: dict[str, FAISS] = {}
+vector_stores: dict[str, object] = {}
 doc_metadata: dict[str, dict] = {}
 
 # Performance metrics store
@@ -178,20 +273,6 @@ perf_metrics = {
     "query_times": [],
     "embedding_times": [],
 }
-
-
-# ---------------------------------------------------------------------------
-# Text Splitter Configuration
-# ---------------------------------------------------------------------------
-
-# RecursiveCharacterTextSplitter — sentence-boundary-aware chunking
-# chunk_size=800, chunk_overlap=160 (20% overlap) — optimal for BGE-large-en-v1.5
-text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=800,
-    chunk_overlap=160,
-    separators=["\n\n", "\n", ". ", "! ", "? ", " ", ""],
-    length_function=len,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -216,7 +297,7 @@ class RegisterRequest(BaseModel):
 @app.post("/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = USERS_DB.get(form_data.username)
-    if not user or not verify_password(form_data.password, user["hashed_password"]):
+    if not user or not await verify_password_async(form_data.password, user["hashed_password"]):
         raise HTTPException(status_code=401, detail="Incorrect username or password")
 
     access_token = create_access_token(data={"sub": form_data.username})
@@ -239,10 +320,11 @@ async def register(req: RegisterRequest):
     if len(req.password) < 4:
         raise HTTPException(status_code=400, detail="Password must be at least 4 characters")
 
+    hashed = await hash_password_async(req.password)
     USERS_DB[req.username] = {
         "username": req.username,
         "full_name": req.full_name,
-        "hashed_password": pwd_context.hash(req.password),
+        "hashed_password": hashed,
     }
     access_token = create_access_token(data={"sub": req.username})
     return {
@@ -259,10 +341,17 @@ async def register(req: RegisterRequest):
 
 @app.post("/upload/")
 async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_current_user)):
+    # Ensure models are loaded before processing
+    models.require_models()
+
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
     try:
+        # Import here — only needed when models are ready
+        from langchain_community.document_loaders import PyMuPDFLoader
+        from langchain_community.vectorstores import FAISS
+
         # Save to temp file (PyMuPDFLoader needs a file path)
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(await file.read())
@@ -277,7 +366,7 @@ async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_curr
             raise HTTPException(status_code=400, detail="Could not extract text from PDF")
 
         # RecursiveCharacterTextSplitter — intelligent chunking
-        chunks = text_splitter.split_documents(pages)
+        chunks = models.text_splitter.split_documents(pages)
 
         if len(chunks) == 0:
             raise HTTPException(status_code=400, detail="PDF produced no usable text chunks")
@@ -285,7 +374,7 @@ async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_curr
         # FAISS vector store — time the embedding + indexing
         t_embed_start = time.time()
         doc_id = str(uuid.uuid4())
-        vector_store = FAISS.from_documents(chunks, embeddings)
+        vector_store = FAISS.from_documents(chunks, models.embeddings)
         t_embed_end = time.time()
         embedding_time_ms = (t_embed_end - t_embed_start) * 1000
 
@@ -337,6 +426,9 @@ async def upload_pdf(file: UploadFile = File(...), user: dict = Depends(get_curr
 
 @app.post("/ask/")
 async def ask_question(req: AskRequest, user: dict = Depends(get_current_user)):
+    # Ensure models are loaded before processing
+    models.require_models()
+
     if not req.question.strip():
         raise HTTPException(status_code=400, detail="Question cannot be empty")
 
@@ -344,6 +436,9 @@ async def ask_question(req: AskRequest, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="Document not found. Please upload a PDF first.")
 
     try:
+        # Import here — only needed when models are ready
+        from langchain.retrievers import ContextualCompressionRetriever
+
         vector_store = vector_stores[req.doc_id]
 
         # --- Timed retrieval pipeline ---
@@ -357,7 +452,7 @@ async def ask_question(req: AskRequest, user: dict = Depends(get_current_user)):
 
         # Step 2: ContextualCompressionRetriever with BGE cross-encoder reranker
         compression_retriever = ContextualCompressionRetriever(
-            base_compressor=reranker,
+            base_compressor=models.reranker,
             base_retriever=base_retriever,
         )
 
@@ -378,7 +473,7 @@ async def ask_question(req: AskRequest, user: dict = Depends(get_current_user)):
         context = "\n\n".join(doc.page_content for doc in reranked_docs[:5])
 
         # Step 5: DeBERTa-v3-large QA reader
-        result = qa_reader({"question": req.question, "context": context})
+        result = models.qa_reader({"question": req.question, "context": context})
         t_end = time.time()
         total_time_ms = (t_end - t_start) * 1000
 
@@ -418,6 +513,8 @@ async def ask_question(req: AskRequest, user: dict = Depends(get_current_user)):
 async def health():
     return {
         "status": "ok",
+        "models_status": models.status,
+        "models_ready": models.is_ready,
         "loaded_documents": len(vector_stores),
         "total_chunks_indexed": perf_metrics["total_chunks_indexed"],
         "total_queries_served": perf_metrics["total_queries"],
@@ -447,6 +544,7 @@ async def stats(user: dict = Depends(get_current_user)):
         "total_chunks_indexed": perf_metrics["total_chunks_indexed"],
         "avg_query_time_ms": perf_metrics["avg_retrieval_time_ms"],
         "avg_embedding_time_ms": perf_metrics["avg_embedding_time_ms"],
+        "models_status": models.status,
         "documents": {
             doc_id: meta for doc_id, meta in doc_metadata.items()
         },
