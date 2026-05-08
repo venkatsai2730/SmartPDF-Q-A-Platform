@@ -147,7 +147,7 @@ function MainApp({ token, user, onLogout }) {
   const authHeaders = { Authorization: `Bearer ${token}` };
 
   const handleFileSelect = (selectedFile) => {
-    if (selectedFile && selectedFile.name.endsWith('.pdf')) {
+    if (selectedFile && selectedFile.name.toLowerCase().endsWith('.pdf')) {
       setFile(selectedFile);
       setUploadError('');
     } else if (selectedFile) {
@@ -167,14 +167,24 @@ function MainApp({ token, user, onLogout }) {
 
   const handleUpload = async () => {
     if (!file) { setUploadError('Please select a PDF file first.'); return; }
+
+    // Validate file size (50MB max)
+    if (file.size > 50 * 1024 * 1024) {
+      setUploadError('File too large. Maximum size is 50MB.');
+      return;
+    }
+
     const formData = new FormData();
     formData.append('file', file);
 
     try {
       setUploading(true);
       setUploadError('');
+      // NOTE: Do NOT set Content-Type manually for FormData — axios/browser
+      // must set it automatically to include the multipart boundary.
       const response = await axios.post(`${API_BASE}/upload/`, formData, {
-        headers: { ...authHeaders, 'Content-Type': 'multipart/form-data' },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 300000, // 5 min timeout for large PDFs
       });
       const newDoc = {
         doc_id: response.data.doc_id,
@@ -188,8 +198,14 @@ function MainApp({ token, user, onLogout }) {
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error) {
-      const detail = error.response?.data?.detail || 'Upload failed. Is the backend running?';
-      setUploadError(detail);
+      if (error.code === 'ECONNABORTED') {
+        setUploadError('Upload timed out. The file may be too large or the server is busy.');
+      } else if (error.response?.status === 503) {
+        setUploadError('Models are still loading. Please wait a moment and try again.');
+      } else {
+        const detail = error.response?.data?.detail || 'Upload failed. Is the backend running?';
+        setUploadError(detail);
+      }
     } finally {
       setUploading(false);
     }
@@ -205,10 +221,19 @@ function MainApp({ token, user, onLogout }) {
       setAnswer(null);
       const response = await axios.post(`${API_BASE}/ask/`, {
         doc_id: activeDocId, question,
-      }, { headers: authHeaders });
+      }, {
+        headers: authHeaders,
+        timeout: 120000, // 2 min timeout for QA pipeline
+      });
       setAnswer(response.data);
     } catch (error) {
-      setAskError(error.response?.data?.detail || 'Query failed.');
+      if (error.response?.status === 401) {
+        setAskError('Session expired. Please log out and sign in again.');
+      } else if (error.response?.status === 503) {
+        setAskError('Models are still loading. Please wait a moment and try again.');
+      } else {
+        setAskError(error.response?.data?.detail || 'Query failed. Is the backend running?');
+      }
     } finally {
       setAsking(false);
     }
@@ -340,7 +365,11 @@ function MainApp({ token, user, onLogout }) {
                     <h2 className="section-title"><span className="section-icon">✨</span> Answer</h2>
 
                     <div className="answer-box">
-                      <p className="answer-text">{answer.answer}</p>
+                      {answer.answer.split('\n').filter(line => line.trim()).map((line, i) => (
+                        <p key={i} className={`answer-text ${line.trim().startsWith('•') ? 'answer-bullet' : ''}`}>
+                          {line}
+                        </p>
+                      ))}
                     </div>
 
                     <div className="answer-meta-row">
@@ -356,6 +385,15 @@ function MainApp({ token, user, onLogout }) {
                         <div className="time-badge">⚡ {answer.total_time_ms}ms total · {answer.retrieval_time_ms}ms retrieval</div>
                       )}
                     </div>
+
+                    {answer.method && (
+                      <div className="method-badge">
+                        <span className="badge-dot" />
+                        Strategy: {answer.method === 'semantic_retrieval' ? 'Semantic Retrieval (comprehensive)' :
+                                   answer.method === 'extractive_qa' ? 'Extractive QA (precise)' :
+                                   answer.method}
+                      </div>
+                    )}
 
                     <div className="pipeline-badge">
                       <span className="badge-dot" />
