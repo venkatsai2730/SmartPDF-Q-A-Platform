@@ -1,0 +1,20 @@
+--trusted-host pypi.org
+--trusted-host pypi.python.org
+--trusted-host files.pythonhosted.org
+--trusted-host download.pytorch.org
+--extra-index-url https://download.pytorch.org/whl/cpu
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12
+langchain==0.3.7
+langchain-community==0.3.7
+langchain-huggingface==0.1.2
+langchain-text-splitters==0.3.2
+pymupdf==1.24.11
+faiss-cpu==1.9.0
+sentence-transformers==3.3.1
+transformers==4.46.3
+torch==2.4.1
+numpy<2.0.0
+python-jose[cryptography]==3.3.0
+bcrypt==4.2.0
