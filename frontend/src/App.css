@@ -773,3 +773,173 @@ body {
   .btn-accent { width: 100%; }
   .login-card { padding: 32px 24px; }
 }
+
+/* ===================================================================
+   FILTERS PANEL
+   =================================================================== */
+
+.filter-toggle-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  padding: 6px 0;
+  transition: color var(--transition-fast);
+}
+
+.filter-toggle-btn:hover { color: var(--accent-blue); }
+
+.filter-active-count {
+  margin-left: auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: none;
+  letter-spacing: 0;
+  background: var(--accent-emerald-light);
+  color: var(--accent-emerald);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.filters-panel {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.filter-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.filter-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.filter-input {
+  flex: 1;
+  padding: 8px 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: var(--radius-sm);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.82rem;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  outline: none;
+  transition: border-color var(--transition-fast);
+  width: 70px;
+}
+
+.filter-input:focus {
+  border-color: var(--accent-blue);
+  box-shadow: var(--shadow-focus);
+}
+
+.filter-separator {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.filter-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.filter-chip {
+  padding: 4px 10px;
+  border: 1.5px solid var(--border-light);
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-family: 'Inter', sans-serif;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.filter-chip:hover {
+  border-color: var(--accent-blue);
+  color: var(--accent-blue);
+}
+
+.filter-chip-active {
+  background: var(--accent-blue-light);
+  border-color: var(--accent-blue);
+  color: var(--accent-blue-dark);
+  font-weight: 600;
+}
+
+.filter-range {
+  width: 100%;
+  accent-color: var(--accent-blue);
+}
+
+.filter-range-value {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.active-filters-summary {
+  margin-top: 10px;
+  padding: 8px 12px;
+  background: var(--accent-emerald-light);
+  border: 1px solid rgba(16, 185, 129, 0.2);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: #065f46;
+}
+
+
+/* ===================================================================
+   PIPELINE STAGES BREAKDOWN
+   =================================================================== */
+
+.pipeline-stages {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  padding: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-sm);
+}
+
+.stage-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.stage-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.stage-value {
+  font-size: 0.73rem;
+  font-weight: 500;
+  color: var(--accent-indigo);
+  font-family: 'JetBrains Mono', monospace, 'Inter';
+}
