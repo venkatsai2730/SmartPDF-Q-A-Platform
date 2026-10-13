@@ -2,17 +2,18 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import axios from 'axios';
 import './App.css';
 
-const API_BASE = "http://localhost:8000";
+// Backend URL; override at build time with REACT_APP_API_BASE
+const API_BASE = process.env.REACT_APP_API_BASE || "http://localhost:8100";
 
 /* ================================================================
    LOGIN PAGE COMPONENT
    ================================================================ */
-function LoginPage({ onLogin }) {
+function LoginPage({ onLogin, notice }) {
   const [isRegister, setIsRegister] = useState(false);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
-  const [error, setError] = useState('');
+  const [error, setError] = useState(notice || '');
   const [loading, setLoading] = useState(false);
 
   const handleSubmit = async (e) => {
@@ -97,7 +98,7 @@ function LoginPage({ onLogin }) {
 /* ================================================================
    MAIN APP COMPONENT (after login)
    ================================================================ */
-function MainApp({ token, user, onLogout }) {
+function MainApp({ token, user, onLogout, onSessionExpired }) {
   const [file, setFile] = useState(null);
   const [dragOver, setDragOver] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -127,7 +128,10 @@ function MainApp({ token, user, onLogout }) {
     if (activeDocId) {
       axios.get(`${API_BASE}/doc-info/${activeDocId}`, { headers: authHeaders })
         .then(res => setDocInfo(res.data))
-        .catch(() => setDocInfo(null));
+        .catch((error) => {
+          if (error.response?.status === 401) onSessionExpired();
+          setDocInfo(null);
+        });
     } else {
       setDocInfo(null);
     }
@@ -175,7 +179,9 @@ function MainApp({ token, user, onLogout }) {
       setFile(null);
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (error) {
-      if (error.code === 'ECONNABORTED') {
+      if (error.response?.status === 401) {
+        onSessionExpired();
+      } else if (error.code === 'ECONNABORTED') {
         setUploadError('Upload timed out.');
       } else if (error.response?.status === 503) {
         setUploadError('Models are still loading. Please wait.');
@@ -206,7 +212,7 @@ function MainApp({ token, user, onLogout }) {
       });
       setAnswer(response.data);
     } catch (error) {
-      if (error.response?.status === 401) setAskError('Session expired.');
+      if (error.response?.status === 401) onSessionExpired();
       else if (error.response?.status === 503) setAskError('Models still loading.');
       else setAskError(error.response?.data?.detail || 'Query failed.');
     } finally {
@@ -432,9 +438,29 @@ function MainApp({ token, user, onLogout }) {
                   <div className="panel-section answer-section animate-in">
                     <h2 className="section-title"><span className="section-icon">✨</span> Answer</h2>
                     <div className="answer-box">
-                      {answer.answer.split('\n').filter(line => line.trim()).map((line, i) => (
-                        <p key={i} className={`answer-text ${line.trim().startsWith('•') ? 'answer-bullet' : ''}`}>{line}</p>
-                      ))}
+                      {answer.answer_found === false && (
+                        <p className="answer-text">{answer.answer}</p>
+                      )}
+                      {answer.answer_found === false && answer.answer_blocks && answer.answer_blocks.length > 0 && (
+                        <div className="related-label">Closest sections (low relevance)</div>
+                      )}
+                      {answer.answer_blocks && answer.answer_blocks.length > 0 ? (
+                        answer.answer_blocks.map((block, i) => (
+                          <div key={i} className="answer-group">
+                            <div className="answer-group-head">
+                              <span className="answer-group-title">{block.heading}</span>
+                              <span className="answer-page-badge">p. {block.page}</span>
+                            </div>
+                            <ul className="answer-list">
+                              {block.items.map((item, j) => <li key={j}>{item}</li>)}
+                            </ul>
+                          </div>
+                        ))
+                      ) : answer.answer_found === false ? null : (
+                        answer.answer.split('\n').filter(line => line.trim()).map((line, i) => (
+                          <p key={i} className={`answer-text ${line.trim().startsWith('•') ? 'answer-bullet' : ''}`}>{line}</p>
+                        ))
+                      )}
                     </div>
 
                     <div className="answer-meta-row">
@@ -458,7 +484,7 @@ function MainApp({ token, user, onLogout }) {
                           <span className="stage-value">{answer.pipeline_stages.stage1_prefilter_ms}ms → {answer.pipeline_stages.stage1_chunks_after} chunks</span>
                         </div>
                         <div className="stage-item">
-                          <span className="stage-label">Stage 2: FAISS Search</span>
+                          <span className="stage-label">Stage 2: Vector + BM25 (RRF)</span>
                           <span className="stage-value">{answer.pipeline_stages.stage2_search_ms}ms → {answer.pipeline_stages.stage2_candidates} candidates</span>
                         </div>
                         <div className="stage-item">
@@ -471,7 +497,7 @@ function MainApp({ token, user, onLogout }) {
                     {answer.method && (
                       <div className="method-badge">
                         <span className="badge-dot" />
-                        {answer.method === 'semantic_retrieval' ? 'Semantic Retrieval' : 'Extractive QA'}
+                        {{ semantic_retrieval: 'Semantic Retrieval', not_found: 'Not Found', none: 'No Result' }[answer.method] || 'Extractive QA'}
                       </div>
                     )}
 
@@ -507,7 +533,7 @@ function MainApp({ token, user, onLogout }) {
         <footer className="app-footer">
           <p>
             3-Stage Hybrid Filtering: <span className="footer-model">Pre-filter</span> →{' '}
-            <span className="footer-model">FAISS ANN</span> →{' '}
+            <span className="footer-model">Vector + BM25</span> →{' '}
             <span className="footer-model">Post-filter + Rerank</span> | BGE + DeBERTa
           </p>
         </footer>
@@ -525,12 +551,15 @@ function App() {
     return saved ? JSON.parse(saved) : null;
   });
 
+  const [notice, setNotice] = useState('');
+
   const handleLogin = (data) => {
     const authData = {
       token: data.access_token,
       user: { username: data.username, full_name: data.full_name },
     };
     localStorage.setItem('smartpdf_auth', JSON.stringify(authData));
+    setNotice('');
     setAuth(authData);
   };
 
@@ -539,8 +568,17 @@ function App() {
     setAuth(null);
   };
 
-  if (!auth) return <LoginPage onLogin={handleLogin} />;
-  return <MainApp token={auth.token} user={auth.user} onLogout={handleLogout} />;
+  // Server rejected our token (expired, or signed with a different key): back to login
+  const handleSessionExpired = () => {
+    setNotice('Your session has expired. Please sign in again.');
+    handleLogout();
+  };
+
+  if (!auth) return <LoginPage onLogin={handleLogin} notice={notice} />;
+  return (
+    <MainApp token={auth.token} user={auth.user}
+      onLogout={handleLogout} onSessionExpired={handleSessionExpired} />
+  );
 }
 
 export default App;

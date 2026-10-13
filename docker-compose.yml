@@ -5,11 +5,13 @@ services:
       context: ./backend
     container_name: smartpdf-backend
     ports:
-      - "8000:8000"
+      - "8100:8000"   # host 8100 -> container 8000 (8000 is used by other local apps)
     environment:
       - JWT_SECRET_KEY=smartpdf-production-secret-change-me
+      - DATA_DIR=/app/data          # documents, vectors and registered users live here
     volumes:
       - model_cache:/root/.cache    # Persist downloaded HuggingFace models
+      - smartpdf_data:/app/data     # Persist uploaded documents across restarts
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')"]
@@ -24,10 +26,11 @@ services:
       context: ./frontend
     container_name: smartpdf-frontend
     ports:
-      - "3000:80"
+      - "3100:80"
     depends_on:
       - backend
     restart: unless-stopped
 
 volumes:
   model_cache:
+  smartpdf_data:
